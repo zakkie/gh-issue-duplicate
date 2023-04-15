@@ -1,0 +1,116 @@
+#!/usr/bin/env python3
+import json
+import subprocess
+import sys
+from argparse import ArgumentParser
+from string import Template
+from urllib.parse import urlparse
+
+Query = Template(
+    """
+query {
+  repository(owner: "${repo_org}", name: "${repo_name}") {
+    issue(number: ${issue_num}) {
+      title
+      body
+      assignees(first: 10) {
+        nodes {
+          login
+        }
+      }
+      labels(first: 10) {
+        nodes {
+          name
+        }
+      }
+      projectItems(first: 10) {
+        nodes {
+          project {
+            title
+          }
+        }
+      }
+      milestone {
+        title
+      }
+    }
+  }
+}
+"""
+)
+
+
+def main():
+    parser = ArgumentParser()
+    parser.add_argument(
+        "url",
+        type=str,
+        help="Issue URL (ex. https://github.com/zakkie/gh-issue-duplicate/issues/999",
+    )
+    args = parser.parse_args()
+
+    url_parsed = urlparse(args.url)
+    try:
+        _, repo_org, repo_name, _, issue_num = url_parsed.path.split("/")
+    except ValueError:
+        print(f"Invalid URL: {args.url}")
+        print()
+        parser.print_help()
+        sys.exit(1)
+    query = Query.substitute(
+        repo_org=repo_org, repo_name=repo_name, issue_num=issue_num
+    )
+
+    cmd = (
+        "gh",
+        "api",
+        "graphql",
+        "-f",
+        f"query={query}",
+    )
+    res = subprocess.run(cmd, shell=False, capture_output=True)
+    obj = json.loads(res.stdout)["data"]["repository"]["issue"]
+
+    title = obj["title"]
+    body = obj["body"]
+    assignees = [l["login"] for l in obj["assignees"]["nodes"]]
+    labels = [l["name"] for l in obj["labels"]["nodes"]]
+    projects = [p["project"]["title"] for p in obj["projectItems"]["nodes"]]
+    milestone = obj["milestone"]["title"] if obj["milestone"] else ""
+
+    regist_cmd = (
+        "gh",
+        "issue",
+        "create",
+        "-R",
+        f"{repo_org}/{repo_name}",
+        "--title",
+        title,
+        "--body",
+        body,
+        "--assignee",
+        ",".join(assignees),
+        "--project",
+        ",".join(projects),
+        "--label",
+        ",".join(labels),
+        "--milestone",
+        milestone,
+    )
+    res = subprocess.run(regist_cmd, shell=False, capture_output=True, check=True)
+
+    new_url = res.stdout.decode("utf-8").strip()
+    comment_cmd = (
+        "gh",
+        "issue",
+        "comment",
+        new_url,
+        "-b",
+        f"duplicated from {args.url}",
+    )
+    subprocess.run(comment_cmd, shell=False, capture_output=True, check=True)
+
+    print(f"New issule: {new_url}")
+
+
+main()
